@@ -26,7 +26,8 @@
 #define RR 0x05
 #define DISC 0x0b
 #define REJ 0x01
-#define MAXOFFSET 3
+#define MAXOFFSET 5
+
 
 /**
  * struct usada para guardar dados das tramas
@@ -48,6 +49,11 @@ typedef struct
   unsigned char *flags;
 } Trama;
 
+float T_PROP = 0.0; //tempo de propagacao em segundos
+int FER_percentage = 0; //probabilidade de haver erro artificial (n inteiro)
+int T_trama = 260; //tamanho da trama de dados -> 5 + tamanho do campo de informacacao (default 5 + 255 = 260)
+
+int bytesSent = 0;
 int fileSize = 0;
 int transferedSize = 0;
 char FICHEIRO[255] = "./pinguim.gif";
@@ -182,6 +188,8 @@ int sendTrama(Trama *t, int fd)
   printf("\n__________\n\n");*/
 
   int res = write(fd, set, next);
+  bytesSent += res;
+  nanosleep((const struct timespec[]){{0, T_PROP * 1000000000L}}, NULL);
   //printf("%d bytes written\n", res);
   free(set);
 
@@ -250,7 +258,6 @@ Trama *receiveData(int fd, bool alarm)
 
   int state = 0, res;
   int flag_count = -1, inf_count = 0;
-  unsigned char received_c;
   bool tramaI = true;
   bool ERRO = false;
   bool EXIT = FALSE;
@@ -297,7 +304,6 @@ Trama *receiveData(int fd, bool alarm)
         state++;
       break;
     case 1:
-      received_c = received_byte;
       state++;
       break;
     case 2:
@@ -436,7 +442,7 @@ Trama *receiveData(int fd, bool alarm)
 int connect(int fd)
 {
   //***************** ligacao inicial *******************
-	
+
   clear();
   printf("Connecting\n");
   int alarmCnt = 0;
@@ -470,13 +476,7 @@ int connect(int fd)
       }
     }
 
-    /*
-      O ciclo FOR e as instru��es seguintes devem ser alterados de modo a respeitar
-      o indicado no gui�o
-    */
-    sleep(1);
 
-    tcflush(fd, TCIOFLUSH);
 
     if (emitter)
     {
@@ -554,7 +554,7 @@ int stuffFile(FILE * fp, unsigned char *** stuffedFile){
     case 0x7e:
       t = 2;
 
-      if(x + t > 254){
+      if(x + t > T_trama - 6){
         //printf("Raw byte size at index %d: %d\n", y, rawByteSize);
         (*stuffedFile)[y][0] = x;
         (*stuffedFile)[y++][x] = 0x7d;
@@ -570,7 +570,7 @@ int stuffFile(FILE * fp, unsigned char *** stuffedFile){
     case 0x7d:
       t = 2;
 
-      if(x + t > 254){
+      if(x + t > T_trama - 6){
         //printf("Raw byte size at index %d: %d\n", y, rawByteSize);
         (*stuffedFile)[y][0] = x;
         (*stuffedFile)[y++][x] = 0x7d;
@@ -586,7 +586,7 @@ int stuffFile(FILE * fp, unsigned char *** stuffedFile){
     default:
       t = 1;
 
-      if(x + t > 254){
+      if(x + t > T_trama - 6){
         //printf("Raw byte size at index %d: %d\n", y, rawByteSize);
         (*stuffedFile)[y][0] = x;
         (*stuffedFile)[y++][x] = 0x7d;
@@ -666,7 +666,7 @@ void destuff(unsigned char ** v, int *curIndice, int *tam, Dados d){
 }
 
 int storeData(FILE ** fp, unsigned char * dados, int tamanho){
-  fwrite(dados, sizeof(unsigned char),tamanho,*fp);
+  return fwrite(dados, sizeof(unsigned char),tamanho,*fp);
 }
 
 int transfer_file(int fd)
@@ -703,6 +703,7 @@ int transfer_file(int fd)
 
 
   printf("Transfering\n");
+
 
 
   int counter = 0;
@@ -762,13 +763,9 @@ int transfer_file(int fd)
         }
       }
 
-      /*
-        O ciclo FOR e as instru��es seguintes devem ser alterados de modo a respeitar
-        o indicado no gui�o
-      */
-      float sleepAmount = 0.2;
-      nanosleep((const struct timespec[]){{0, sleepAmount * 1000000000L}}, NULL);
-      tcflush(fd, TCIOFLUSH);
+
+      /**********************************************/
+
 
       if (emitter)
       {
@@ -792,7 +789,8 @@ int transfer_file(int fd)
       {
         unsigned char c;
         if(!erro)
-          c = RR;
+          if(rand() % 99 < FER_percentage) c = REJ;
+          else c = RR;
         else
           c = REJ;
 
@@ -852,7 +850,7 @@ int transfer_file(int fd)
       else{
         if(!erro){
           externCounter = received->informacao.n_sequencia;
-          if(received->informacao.cc == 1 && externCounter == counter){
+          if(received->informacao.cc == 1 && externCounter == counter%255){
             int bufSize = 255, index = 0;
             unsigned char *buf = calloc(bufSize, sizeof(unsigned char));
             destuff(&buf, &index, &bufSize, received->informacao);
@@ -879,9 +877,11 @@ int transfer_file(int fd)
     if(emitter)
       printf("\n%.1f%%\n", 100.0*counter / (n_tramas_dados + 1.0));
     else
-    printf("\n%.1f%%\n", 100.0*transferedSize / fileSize);
+      printf("\n%.1f%%\n", 100.0*transferedSize / fileSize);
 
   }
+
+
 
   fclose(fp);
   return 0;
@@ -924,13 +924,7 @@ int ending(int fd){
       }
     }
 
-    /*
-      O ciclo FOR e as instru��es seguintes devem ser alterados de modo a respeitar
-      o indicado no gui�o
-    */
-    sleep(1);
 
-    tcflush(fd, TCIOFLUSH);
 
     if (emitter)
     {
@@ -956,9 +950,6 @@ int ending(int fd){
       break;
     }
 
-    sleep(1);
-
-    tcflush(fd, TCIOFLUSH);
 
     if (emitter)
     {
@@ -1000,10 +991,8 @@ int ending(int fd){
 
 int main(int argc, char **argv)
 {
-  int fd, c;
+  int fd;
   struct termios oldtio, newtio;
-  char buf[255];
-  int i, sum = 0, speed = 0;
 
   if ((argc < 3) ||
       ((strcmp("/dev/ttyS0", argv[1]) != 0) &&
@@ -1069,13 +1058,29 @@ int main(int argc, char **argv)
     exit(-1);
   }
 
+  srand(time(NULL));
+
   //****************************************
+  tcflush(fd, TCIOFLUSH);
 
   if (connect(fd)) {printf("Erro, connecting retornou 1\n"); goto END;}
 
+  sleep(1);
+  tcflush(fd, TCIOFLUSH);
+
+  struct timespec start, end;
+  clock_gettime(CLOCK_MONOTONIC, &start);
+
   if (transfer_file(fd)) {printf("Erro, transfer_file retornou 1\n"); goto END;}
-  else{
-    if(!emitter){
+
+  clock_gettime(CLOCK_MONOTONIC, &end);
+
+  if(ending(fd)){printf("Erro, disconnecting retornou 1\n"); goto END;}
+
+  sleep(1);
+  tcflush(fd, TCIOFLUSH);
+
+  if(!emitter){
       if(transferedSize != fileSize){
         printf("There were transfer error:\n\tFile size: %d\n\tTransfered size: %d\n", fileSize, transferedSize);
       }
@@ -1083,9 +1088,10 @@ int main(int argc, char **argv)
         printf("Success\n");
       }
     }
-  }
 
-  if(ending(fd)){printf("Erro, disconnecting retornou 1\n"); goto END;}
+  double time_taken = (end.tv_sec - start.tv_sec); // seconds
+  time_taken += (end.tv_nsec - start.tv_nsec) * 1e-9; // adds nanoseconds
+  //printf("Took: %.3f seconds\nSent %d bytes at %.2f bps\n", time_taken, bytesSent, bytesSent/time_taken);
 
   //****************************************
 
@@ -1094,8 +1100,6 @@ END:
   tcflush(fd, TCIOFLUSH);
 
   sleep(1);
-
-  //process ?
 
   if (tcsetattr(fd, TCSANOW, &oldtio) == -1)
   {
